@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+
+"""
+Downvotes all of the comments of a predefined set of HackerNews users.
+Reads the newline delineated list of usernames from `names.txt`.
+The script functions by collecting all of the downvote links for a user's recent comments
+and visits them all.
+This is the simplest method that works. Hacker News creates an arbitrary authorisation
+token required by the voting system and attaches it to links. Rather than attempting to
+construct these tokens manually, we just follow the links as they exist on the page.
+"""
+
+import sys
+from lxml import html
+import requests
+
+# The HTTP headers to send with each request.
+# Update the user-agent string to something that matches your regular user-agent.
+http_headers = requests.utils.default_headers()
+http_headers.update({
+    'User-Agent': 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:84.0) Gecko/20100101 Firefox/84.0'
+})
+
+
+def get_downvote_links(_session, _username):
+    """
+    Fetches an array of downvote links for comments associated with a username.
+    This method works by requesting your authenticated version of the user's 'threads'
+    page containing all of their recent comments. From this page, all of the 'downvote'
+    links are collected, where they can be followed later.
+    """
+
+    # The download links to return.
+    downvote_links = []
+    # The 'threads' page for the requested user.
+    threads_response = _session.get(f"https://news.ycombinator.com/threads?id={_username}")
+    # The 'threads' page HTML root.
+    html_root = html.fromstring(threads_response.text)
+    # All of the comment HTML elements.
+    comment_elements = html_root.xpath("//span[@class='comhead']")
+
+    # Iterate through each comment element and get the id.
+    for comment_element in comment_elements:
+        # The username of the post.
+        comment_username = comment_element.xpath("a[@class='hnuser'][1]/text()")
+
+        # If there is no text in this element, it is likely because of a 'green' username.
+        # In this case get the text inside of the containing <font> element.
+        if len(comment_username) < 1:
+            comment_username = comment_element.xpath("a[@class='hnuser'][1]/font[1]/text()")
+
+        # Filter the comment elements. to only comments associated with the username.
+        if comment_username[0] == _username:
+            # The post link, which contains the id.
+            post_link = comment_element.xpath("span[@class='age']/a/@href[1]")
+            # Get the id from the link string.
+            comment_id = post_link[0].split("item?id=")[1]
+            # The comment downvote link, if it exists.
+            downvote_link = html_root.xpath(f"//a[@id='down_{comment_id}']/@href")
+            if downvote_link:
+                downvote_links.append(downvote_link[0])
+
+    return downvote_links
+
+
+def downvote_comment(_session, _link):
+    """
+    Downvotes an individual comment.
+    """
+
+    # Hacker News redirects users to the post on successful vote.
+    # Redirects are disabled here so that we can deduce from the HTTP response code
+    # whether the login was successful. A 302 redirect code indicates a successful vote,
+    # anything else is a failure.
+    downvote_response = _session.get(
+        f"https://news.ycombinator.com/{_link}",
+        allow_redirects=False,
+        headers=http_headers
+    )
+
+    if downvote_response.status_code != 302:
+        raise ValueError("Error sending vote request")
+
+
+def print_usage():
+    """Prints script usage to STDOUT."""
+
+    print("Usage: downvote_grudges <USERNAME> <PASSWORD>")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        print("Incorrect usage")
+        print_usage()
+        exit(1)
+
+    LOGIN_NAME = sys.argv[1]
+    LOGIN_PASSWORD = sys.argv[2]
+
+    session = requests.Session()
+    session.cookies.clear()
+
+    # Hacker News redirects users to the index on successful login.
+    # Redirects are disabled here so that we can deduce from the HTTP response code
+    # whether the login was successful. A 302 redirect code indicates a successful login,
+    # anything else is a failure.
+    login_response = session.post(
+        "https://news.ycombinator.com/login",
+        data={
+            "acct": LOGIN_NAME,
+            "pw": LOGIN_PASSWORD
+        },
+        allow_redirects=False,
+        headers=http_headers
+    )
+
+    if login_response.status_code != 302:
+        print("Unsuccessful login")
+        exit(1)
+
+    print()
+    print("▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒")
+    print("▒                                                   ▒")
+    print("▒             HACKER NEWS GRUDGE SCRIPT             ▒")
+    print("▒                                                   ▒")
+    print("▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒")
+    print()
+
+    try:
+        with open("names.txt") as names_file:
+            for username in names_file:
+                print(f"Downvoting comments for '{username.strip()}'...")
+
+                DOWNVOTE_LINKS = get_downvote_links(session, username.strip())
+                for link in DOWNVOTE_LINKS:
+                    downvote_comment(session, link)
+    except IOError:
+        print("`names.txt` does not exist! Exiting.")
+        exit(1)
